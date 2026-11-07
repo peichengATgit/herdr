@@ -1045,9 +1045,31 @@ pub(super) fn url_from_link_target(target: crate::ghostty::LinkTarget) -> Option
     match target {
         crate::ghostty::LinkTarget::Uri(uri) => Some(uri),
         crate::ghostty::LinkTarget::Text { text, clicked_byte } => {
-            url_at_byte(&text, clicked_byte).map(str::to_owned)
+            link_byte_range(&text, clicked_byte)
+                .and_then(|range| text.get(range))
+                .map(|value| {
+                    if safe_web_url(value).is_some() || value.starts_with("file:") {
+                        value.to_owned()
+                    } else {
+                        file_path_uri(value)
+                    }
+                })
         }
     }
+}
+
+fn file_path_uri(path: &str) -> String {
+    use std::fmt::Write;
+    let mut uri = String::from("file:");
+    for byte in path.bytes() {
+        if byte.is_ascii_alphanumeric() || b"/-._~:$".contains(&byte) {
+            uri.push(char::from(byte));
+        } else {
+            // Formatting into a String cannot fail.
+            let _ = write!(uri, "%{byte:02X}");
+        }
+    }
+    uri
 }
 
 pub(crate) fn safe_web_url(url: &str) -> Option<&str> {
@@ -1097,6 +1119,7 @@ pub(crate) fn word_bounds_at_column(row: &str, col: u16) -> Option<(u16, u16)> {
     Some(span.columns(&cells))
 }
 
+#[cfg(test)]
 fn url_at_byte(text: &str, clicked_byte: usize) -> Option<&str> {
     let range = url_byte_range(text, clicked_byte)?;
     text.get(range)
@@ -1110,6 +1133,34 @@ pub(super) fn url_byte_range(text: &str, clicked_byte: usize) -> Option<std::ops
     let end = byte_index_after_cell(text, span.end);
     safe_web_url(text.get(start..end)?)?;
     Some(start..end)
+}
+
+/// Link recognition runs only on a requested terminal row, never during rendering.
+pub(super) fn link_byte_range(text: &str, clicked_byte: usize) -> Option<std::ops::Range<usize>> {
+    if let Some(range) = url_byte_range(text, clicked_byte) {
+        return Some(range);
+    }
+    let clicked_idx = text.get(..clicked_byte)?.chars().count();
+    let cells = text_cells(text);
+    if clicked_idx >= cells.len() {
+        return None;
+    }
+    let span = quoted_path_span_at_column(&cells, clicked_idx)
+        .or_else(|| token_span_at_column(&cells, clicked_idx))?;
+    let range = byte_index_for_cell(text, span.start)..byte_index_after_cell(text, span.end);
+    let value = text.get(range.clone())?;
+    let path = value.strip_prefix("file:").unwrap_or(value);
+    // Other URI schemes belong to explicit OSC 8 hyperlinks, not file matching.
+    if path.contains("://") && !value.starts_with("file:") {
+        return None;
+    }
+    let filename = path.rsplit('/').next()?;
+    let path_shaped = value.starts_with("file:")
+        || path.contains('/')
+        || filename.split(':').next().is_some_and(|name| {
+            name.contains('.') && !name.starts_with('.') && !name.ends_with('.')
+        });
+    (path_shaped && !path.chars().any(char::is_control)).then_some(range)
 }
 
 fn token_span_at_column(cells: &[TextCell], clicked_idx: usize) -> Option<CellSpan> {
@@ -4726,5 +4777,100 @@ mod tests {
         assert!(!deferred);
         assert_eq!(state.workspaces.len(), 1);
         assert_eq!(state.workspaces[0].display_name(), "notes");
+    }
+}
+
+#[cfg(test)]
+mod file_link_tests {
+    use super::*;
+
+    #[test]
+    fn file_links_keep_source_locations_and_unicode_without_matching_wrappers() {
+        for (text, target) in [
+            ("see src/main.rs:42:7, next", "src/main.rs:42:7"),
+            ("[source](/tmp/source.rs:12)", "/tmp/source.rs:12"),
+            ("`/tmp/你好 file.rs:9`", "/tmp/你好 file.rs:9"),
+            ("open ../src/Makefile", "../src/Makefile"),
+            ("file:///tmp/a%20b.rs:3", "file:///tmp/a%20b.rs:3"),
+            ("~/project/src/main.rs", "~/project/src/main.rs"),
+        ] {
+            let start = text.find(target).expect("target");
+            for (offset, _) in target.char_indices() {
+                let range = link_byte_range(text, start + offset).expect("file range");
+                assert_eq!(&text[range], target, "{text} at {offset}");
+            }
+        }
+        assert_eq!(
+            url_from_link_target(crate::ghostty::LinkTarget::Text {
+                text: "`/tmp/你好 file%20.rs`".into(),
+                clicked_byte: 6,
+            }),
+            Some("file:/tmp/%E4%BD%A0%E5%A5%BD%20file%2520.rs".into())
+        );
+        for (text, byte) in [
+            ("", 0),
+            ("hello", 5),
+            ("hello", 0),
+            ("é", 1),
+            ("https://example.test", 0),
+        ] {
+            let range = link_byte_range(text, byte);
+            if text.starts_with("https:") {
+                assert_eq!(range, Some(0..text.len()));
+            } else {
+                assert_eq!(range, None, "{text} at {byte}");
+            }
+        }
+    }
+
+    #[test]
+    fn quoted_file_path_with_spaces_survives_terminal_extraction() {
+        let path = "/tmp/herdr-links.Bm0HBg/hello world.txt:2";
+        let text = format!("\"{path}\"");
+        for width in [80u16, 18] {
+            let mut terminal = crate::ghostty::Terminal::new(width, 6, 1024).expect("terminal");
+            terminal.write(text.as_bytes());
+            for index in 1..text.len() - 1 {
+                let col = index as u16 % width;
+                let row = index as u32 / u32::from(width);
+                let target = terminal
+                    .viewport_link_target(col, row)
+                    .expect("read")
+                    .expect("quoted target");
+                assert_eq!(
+                    url_from_link_target(target),
+                    Some("file:/tmp/herdr-links.Bm0HBg/hello%20world.txt:2".into()),
+                    "width={width}, index={index}"
+                );
+                let regions = terminal
+                    .viewport_link_regions(col, row, link_byte_range)
+                    .expect("regions");
+                assert_eq!(
+                    regions
+                        .iter()
+                        .map(|region| usize::from(region.end_col - region.start_col + 1))
+                        .sum::<usize>(),
+                    path.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wrapped_file_links_share_one_target_and_all_hover_regions() {
+        let mut terminal = crate::ghostty::Terminal::new(18, 5, 1024).expect("terminal");
+        let path = "/project/src/long_name.rs:42";
+        terminal.write(path.as_bytes());
+        for (col, row) in [(2, 0), (3, 1)] {
+            let target = terminal
+                .viewport_link_target(col, row)
+                .expect("read")
+                .expect("target");
+            assert_eq!(url_from_link_target(target), Some(format!("file:{path}")));
+            assert!(!terminal
+                .viewport_link_regions(col, row, link_byte_range)
+                .expect("regions")
+                .is_empty());
+        }
     }
 }

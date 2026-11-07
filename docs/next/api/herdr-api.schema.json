@@ -8941,6 +8941,12 @@
                 "null"
               ]
             },
+            "priority": {
+              "default": 0,
+              "description": "Highest matching priority wins; omitted priorities retain legacy ordering.",
+              "format": "int32",
+              "type": "integer"
+            },
             "title": {
               "type": "string"
             }
