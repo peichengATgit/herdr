@@ -102,8 +102,14 @@ jobs:
         run: |
           cp target/${{ matrix.target }}/release/herdr ${{ matrix.name }}
           file ${{ matrix.name }} > BUILD_INFO.txt
-          ldd ${{ matrix.name }} 2>&1 | tee -a BUILD_INFO.txt
-          grep -q "statically linked" BUILD_INFO.txt
+          # ldd can fail on a static executable; inspect ELF headers instead.
+          readelf -l ${{ matrix.name }} > "$RUNNER_TEMP/program-headers.txt"
+          readelf -d ${{ matrix.name }} > "$RUNNER_TEMP/dynamic-section.txt"
+          if grep -q 'INTERP' "$RUNNER_TEMP/program-headers.txt" || grep -q '(NEEDED)' "$RUNNER_TEMP/dynamic-section.txt"; then
+            echo "error: Linux artifact requires a dynamic loader or shared libraries" >&2
+            exit 1
+          fi
+          sha256sum ${{ matrix.name }} > SHA256SUMS
           if nm -u ${{ matrix.name }} 2>/dev/null | grep -E '(__cxa|GLIBCXX|CXXABI|_ZSt)'; then
             echo "error: Linux artifact has unresolved C++ runtime symbols" >&2
             exit 1
@@ -123,6 +129,7 @@ jobs:
           path: |
             ${{ matrix.name }}
             BUILD_INFO.txt
+            SHA256SUMS
           retention-days: 7
 
   build-macos:
