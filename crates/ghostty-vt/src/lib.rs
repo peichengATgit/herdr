@@ -1385,6 +1385,9 @@ impl Terminal {
             return Ok(Some((LinkTarget::Uri(uri), None)));
         }
         let graphemes = grid_ref_graphemes(&clicked)?;
+        if let Some(quoted) = self.viewport_quoted_link_selection(clicked, &graphemes)? {
+            return Ok(Some(quoted));
+        }
         if graphemes
             .first()
             .copied()
@@ -1435,6 +1438,84 @@ impl Terminal {
             },
             Some(selection),
         )))
+    }
+
+    /// Keep quoted text containing whitespace intact before the caller resolves a link.
+    /// A logical line is bounded by the same 8192-cell budget as ordinary tokens;
+    /// hard line breaks are never joined, while terminal soft wraps are retained.
+    fn viewport_quoted_link_selection(
+        &self,
+        clicked: ffi::GhosttyGridRef,
+        graphemes: &[u32],
+    ) -> Result<Option<(LinkTarget, Option<ffi::GhosttySelection>)>, Error> {
+        let boundaries = [u32::from(b'\n'), u32::from(b'\r')];
+        let options = ffi::GhosttyTerminalSelectWordOptions {
+            size: mem::size_of::<ffi::GhosttyTerminalSelectWordOptions>(),
+            ref_: clicked,
+            boundary_codepoints: boundaries.as_ptr(),
+            boundary_codepoints_len: boundaries.len(),
+        };
+        let mut selection = ffi::GhosttySelection::default();
+        // This is an on-demand input lookup, not a render or per-pane scan.
+        let result = unsafe {
+            ffi::ghostty_terminal_select_word_bounded(self.raw, &options, 8192, &mut selection)
+        };
+        if result == ffi::GhosttyResult_GHOSTTY_NO_VALUE {
+            return Ok(None);
+        }
+        result.into_result()?;
+        let text = self.format_selection(&selection, FormatterFormat::Plain, true, false)?;
+        if !text.contains(['\"', '\'', '`']) {
+            return Ok(None);
+        }
+        let prefix = self.format_selection(
+            &ffi::GhosttySelection {
+                end: clicked,
+                ..selection
+            },
+            FormatterFormat::Plain,
+            true,
+            false,
+        )?;
+        let clicked_len: usize = graphemes
+            .iter()
+            .copied()
+            .filter_map(char::from_u32)
+            .map(char::len_utf8)
+            .sum();
+        let clicked_byte = prefix.len().saturating_sub(clicked_len);
+        for quote in ['\"', '\'', '`'] {
+            let mut opening = None;
+            for (index, ch) in text.char_indices() {
+                if ch != quote
+                    || text[..index]
+                        .bytes()
+                        .rev()
+                        .take_while(|byte| *byte == b'\\')
+                        .count()
+                        % 2
+                        == 1
+                {
+                    continue;
+                }
+                if let Some(start) = opening.take() {
+                    if start < clicked_byte
+                        && clicked_byte < index
+                        && text[start + ch.len_utf8()..index]
+                            .chars()
+                            .any(char::is_whitespace)
+                    {
+                        return Ok(Some((
+                            LinkTarget::Text { text, clicked_byte },
+                            Some(selection),
+                        )));
+                    }
+                } else {
+                    opening = Some(index);
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Resolve only the bounded plain-text token. OSC 8 regions are resolved by

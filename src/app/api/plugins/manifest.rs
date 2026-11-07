@@ -93,6 +93,8 @@ struct RawPluginManifestLinkHandler {
     action: String,
     #[serde(default)]
     platforms: Option<Vec<RawPlatform>>,
+    #[serde(default)]
+    priority: i32,
 }
 
 /// Raw string platform value from the manifest, validated before conversion.
@@ -496,6 +498,7 @@ fn normalize_manifest_link_handler(
         pattern,
         action,
         platforms,
+        priority: handler.priority,
     })
 }
 

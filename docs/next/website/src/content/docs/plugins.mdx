@@ -366,9 +366,31 @@ name an action declared by the same plugin. Link handler actions receive
 `invocation_source = "link_click"`, `clicked_url`, and `link_handler_id` in
 `HERDR_PLUGIN_CONTEXT_JSON`; shell plugins can also read
 `HERDR_PLUGIN_CLICKED_URL` and `HERDR_PLUGIN_LINK_HANDLER_ID`. Handlers are
-checked in manifest order inside each plugin.
+ranked by optional integer `priority` (highest wins, default `0`). Equal priorities
+retain plugin-id alphabetical order, then manifest order within each plugin.
+Only enabled plugins and handlers/actions supported on the current platform participate.
+Priority expresses the plugin author's intent; Herdr does not infer regex specificity.
+
+For example, a Markdown previewer can declare `priority = 100` for
+`pattern = "^file:.*\\.md(:[0-9]+){0,2}$"`, while a general file viewer uses
+`pattern = "^file:"` with priority `0`. Negative priorities are also allowed.
+Older registry entries and manifests without priority keep their existing behavior.
 
 Link clicks invoke plugins only while `ui.mouse_capture` is enabled. Matching handlers run first. A launch failure shows an error and stops. Without a matching handler, only HTTP(S) links open externally. When capture is disabled, the outer terminal handles explicit hyperlinks using its own shortcuts and warnings. See [mouse controls](/docs/quick-start/#use-the-mouse) for the Windows Terminal URL detection caveat.
+
+### File links
+
+Herdr also recognizes file paths on Ctrl-click and Ctrl-hover, including wrapped
+paths, quoted paths containing spaces, and source locations such as
+`src/main.rs:42:7`. Text paths are passed to matching plugin handlers with a `file:`
+prefix, for example `file:src/main.rs:42:7`. Explicit OSC 8 links retain their URI.
+Handlers must resolve relative paths against `focused_pane_cwd` from the invocation
+context, rather than their own process directory. File URI handlers must decode
+URI escapes and validate the authority before accessing local files. Unclaimed
+file links do not open externally.
+
+A viewer plugin can register `pattern = "^file:"` and route that handler to its own
+action. Herdr does not select a viewer or manage its navigation state.
 
 ## Storage
 

@@ -1030,6 +1030,7 @@ fn plugin_link_list_unlink_round_trip() {
             pattern: "^https://github.com/[^/]+/[^/]+/(issues|pull)/[0-9]+$".into(),
             action: "bootstrap".into(),
             platforms: None,
+            priority: 0,
         }],
         source: Default::default(),
         warnings: vec![],
@@ -1464,4 +1465,13 @@ fn pane_link_resolve_round_trips() {
 fn read_choices_cover_every_api_value() {
     crate::cli::projection::assert_choices_cover_api_enum(READ_SOURCES);
     crate::cli::projection::assert_choices_cover_api_enum(READ_FORMATS);
+}
+
+#[test]
+fn old_link_handler_json_defaults_to_zero_priority() {
+    let handler: PluginManifestLinkHandler = serde_json::from_value(serde_json::json!({
+        "id": "file", "title": "Files", "pattern": "^file:", "action": "open"
+    }))
+    .unwrap();
+    assert_eq!(handler.priority, 0);
 }

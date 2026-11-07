@@ -298,6 +298,9 @@ pub struct PluginManifestLinkHandler {
     pub action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platforms: Option<Vec<PluginPlatform>>,
+    /// Highest matching priority wins; omitted priorities retain legacy ordering.
+    #[serde(default)]
+    pub priority: i32,
 }
 
 cli_params! {

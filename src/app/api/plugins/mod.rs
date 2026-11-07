@@ -319,7 +319,7 @@ impl App {
         params: PaneLinkActivateParams,
     ) -> String {
         match self.read_checked_pane_link(&id, &params, "resolution", |runtime, col, row| {
-            runtime.link_regions_at(col, row, crate::app::actions::url_byte_range)
+            runtime.link_regions_at(col, row, crate::app::actions::link_byte_range)
         }) {
             Ok((_, regions)) => encode_success(id, ResponseResult::PaneLinkResolved { regions }),
             Err(error) => error,
@@ -674,6 +674,7 @@ impl App {
             .cloned()
             .collect::<Vec<_>>();
         plugins.sort_by(|a, b| a.plugin_id.cmp(&b.plugin_id));
+        let mut best: Option<(InstalledPluginInfo, PluginManifestLinkHandler)> = None;
         for plugin in plugins {
             for handler in &plugin.link_handlers {
                 if ensure_platform_supported(
@@ -702,12 +703,16 @@ impl App {
                 let Ok(regex) = regex::Regex::new(&handler.pattern) else {
                     continue;
                 };
-                if regex.is_match(url) {
-                    return Some((plugin.clone(), handler.clone()));
+                if regex.is_match(url)
+                    && best
+                        .as_ref()
+                        .is_none_or(|(_, current)| handler.priority > current.priority)
+                {
+                    best = Some((plugin.clone(), handler.clone()));
                 }
             }
         }
-        None
+        best
     }
 
     fn set_plugin_enabled(&mut self, id: String, plugin_id: String, enabled: bool) -> String {
@@ -3332,6 +3337,226 @@ action = "open"
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn file_link_activation_routes_text_path_to_plugin_with_source_context() {
+        let mut app = test_app();
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("link-handler")];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let root = unique_temp_path("plugin-file-link-handler");
+        write_manifest_content(
+            &root,
+            r#"
+id = "example.links"
+name = "Links"
+version = "0.1.0"
+min_herdr_version = "0.6.10"
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "open"
+title = "Open link"
+command = ["sh", "-c", "printf '%s|%s' \"$HERDR_PLUGIN_LINK_HANDLER_ID\" \"$HERDR_PLUGIN_CLICKED_URL\""]
+
+[[link_handlers]]
+id = "file"
+title = "Open file"
+pattern = "^file:"
+action = "open"
+"#,
+        );
+        link_manifest(&mut app, &root);
+
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 4);
+        runtime.test_process_pty_bytes(b"src/main.rs:42:7");
+        let revision = runtime.content_seq();
+        app.terminal_runtimes.insert(terminal_id, runtime);
+        let public_id = app.public_pane_id(0, pane_id).unwrap();
+        let hover = app.handle_pane_link_resolve(
+            "file-hover".into(),
+            PaneLinkActivateParams {
+                pane_id: public_id.clone(),
+                viewport_row: 0,
+                col: 3,
+                content_revision: Some(revision),
+                offset_from_bottom: Some(0),
+            },
+        );
+        assert!(
+            matches!(response_result(&hover), ResponseResult::PaneLinkResolved { regions } if !regions.is_empty())
+        );
+        assert!(
+            app.state.plugin_command_logs.is_empty(),
+            "printing and hovering must not launch a viewer"
+        );
+        let response = app.handle_pane_link_activate(
+            "file-click".into(),
+            PaneLinkActivateParams {
+                pane_id: public_id,
+                viewport_row: 0,
+                col: 3,
+                content_revision: Some(revision),
+                offset_from_bottom: Some(0),
+            },
+        );
+        assert!(
+            matches!(response_result(&response), ResponseResult::PaneLinkActivated { handled: true, url: Some(url) } if url == "file:src/main.rs:42:7")
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "link activation must not send terminal input"
+        );
+        let log = app
+            .state
+            .plugin_command_logs
+            .last()
+            .expect("plugin command log should be recorded")
+            .clone();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            app.drain_all_internal_events();
+            if app.state.plugin_command_logs.iter().any(|entry| {
+                entry.log_id == log.log_id && entry.status != PluginCommandStatus::Running
+            }) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        let finished = app
+            .state
+            .plugin_command_logs
+            .iter()
+            .find(|entry| entry.log_id == log.log_id)
+            .expect("log should exist");
+        assert_eq!(finished.status, PluginCommandStatus::Succeeded);
+        assert_eq!(finished.action_id.as_deref(), Some("open"));
+        assert_eq!(
+            finished.stdout.as_deref(),
+            Some("file|file:src/main.rs:42:7")
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plugin_link_handler_priority_ranks_matches_across_plugins_and_preserves_ties() {
+        let mut app = test_app();
+        let mut roots = Vec::new();
+        for (id, priority, pattern, platforms, enabled) in [
+            (
+                "example.generic",
+                -10,
+                "^file:",
+                "[\"linux\", \"macos\", \"windows\"]",
+                true,
+            ),
+            (
+                "example.z-markdown",
+                100,
+                "^file:.*\\.md$",
+                "[\"linux\", \"macos\", \"windows\"]",
+                true,
+            ),
+            (
+                "example.disabled",
+                500,
+                "^file:",
+                "[\"linux\", \"macos\", \"windows\"]",
+                false,
+            ),
+            ("example.unsupported", 500, "^file:", "[\"windows\"]", true),
+        ] {
+            let root = unique_temp_path(id);
+            write_manifest_content(
+                &root,
+                &format!(
+                    r#"
+id = "{id}"
+name = "Priority test"
+version = "0.1.0"
+min_herdr_version = "0.9.5"
+[[actions]]
+id = "open"
+title = "Open"
+command = ["true"]
+[[link_handlers]]
+id = "file"
+title = "File"
+pattern = {pattern:?}
+action = "open"
+priority = {priority}
+platforms = {platforms}
+"#
+                ),
+            );
+            link_manifest(&mut app, &root);
+            if !enabled {
+                app.set_plugin_enabled("disable".into(), id.into(), false);
+            }
+            roots.push(root);
+        }
+        let (plugin, handler) = app
+            .find_plugin_link_handler("file:README.md")
+            .expect("markdown match");
+        assert_eq!(plugin.plugin_id, "example.z-markdown");
+        assert_eq!(handler.priority, 100);
+        let (plugin, handler) = app
+            .find_plugin_link_handler("file:main.rs")
+            .expect("fallback match");
+        assert_eq!(plugin.plugin_id, "example.generic");
+        assert_eq!(handler.priority, -10);
+        assert!(app
+            .find_plugin_link_handler("https://example.com")
+            .is_none());
+
+        // Same priority: alphabetical plugin id wins, then declared handler order.
+        let root = unique_temp_path("priority-tie");
+        write_manifest_content(
+            &root,
+            r#"
+id = "example.a-markdown"
+name = "Tie"
+version = "0.1.0"
+min_herdr_version = "0.9.5"
+[[actions]]
+id = "open"
+title = "Open"
+command = ["true"]
+[[link_handlers]]
+id = "z-first"
+title = "First"
+pattern = "^file:"
+action = "open"
+priority = 100
+[[link_handlers]]
+id = "a-second"
+title = "Second"
+pattern = "^file:"
+action = "open"
+priority = 100
+"#,
+        );
+        link_manifest(&mut app, &root);
+        let (plugin, handler) = app
+            .find_plugin_link_handler("file:README.md")
+            .expect("tie match");
+        assert_eq!(plugin.plugin_id, "example.a-markdown");
+        assert_eq!(handler.id, "z-first");
+        roots.push(root);
+        for root in roots {
+            std::fs::remove_dir_all(root).expect("remove test plugin");
+        }
+    }
+
     #[test]
     fn plugin_link_handlers_keep_manifest_order_for_overlapping_patterns() {
         let mut app = test_app();
@@ -3375,6 +3600,7 @@ action = "generic"
             .expect("handler should match");
         assert_eq!(handler.id, "z-specific");
         assert_eq!(handler.action, "specific");
+        assert_eq!(handler.priority, 0, "old manifests default to zero");
 
         let _ = std::fs::remove_dir_all(root);
     }
