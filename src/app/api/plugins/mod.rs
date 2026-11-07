@@ -391,6 +391,18 @@ impl App {
             return Ok(false);
         };
         let mut context = self.plugin_context_for_pane(ws_idx, pane_id, "link_click");
+        // A nested foreground shell can change directories while its parent
+        // shell (and therefore pane.cwd) remains in the launch directory.
+        if let Some(cwd) = self
+            .state
+            .terminal_id_for_pane(ws_idx, pane_id)
+            .and_then(|terminal_id| self.terminal_runtimes.get(&terminal_id))
+            .and_then(|runtime| runtime.foreground_cwd())
+        {
+            let cwd = cwd.display().to_string();
+            context.focused_pane_cwd = Some(cwd.clone());
+            context.workspace_cwd = Some(cwd);
+        }
         context.invocation_source = Some("link_click".to_string());
         context.clicked_url = Some(url.to_string());
         context.link_handler_id = Some(handler.id);
@@ -3359,7 +3371,7 @@ platforms = ["linux", "macos"]
 [[actions]]
 id = "open"
 title = "Open link"
-command = ["sh", "-c", "printf '%s|%s' \"$HERDR_PLUGIN_LINK_HANDLER_ID\" \"$HERDR_PLUGIN_CLICKED_URL\""]
+command = ["sh", "-c", "printf '%s|%s|%s' \"$HERDR_PLUGIN_LINK_HANDLER_ID\" \"$HERDR_PLUGIN_CLICKED_URL\" \"$HERDR_PLUGIN_CONTEXT_JSON\""]
 
 [[link_handlers]]
 id = "file"
@@ -3377,6 +3389,7 @@ action = "open"
         runtime.test_process_pty_bytes(b"src/main.rs:42:7");
         let revision = runtime.content_seq();
         app.terminal_runtimes.insert(terminal_id, runtime);
+        let expected_cwd = app.pane_info(0, pane_id).unwrap().cwd;
         let public_id = app.public_pane_id(0, pane_id).unwrap();
         let hover = app.handle_pane_link_resolve(
             "file-hover".into(),
@@ -3438,11 +3451,119 @@ action = "open"
             .expect("log should exist");
         assert_eq!(finished.status, PluginCommandStatus::Succeeded);
         assert_eq!(finished.action_id.as_deref(), Some("open"));
-        assert_eq!(
-            finished.stdout.as_deref(),
-            Some("file|file:src/main.rs:42:7")
-        );
+        let mut output = finished.stdout.as_deref().unwrap().splitn(3, '|');
+        assert_eq!(output.next(), Some("file"));
+        assert_eq!(output.next(), Some("file:src/main.rs:42:7"));
+        let context: PluginInvocationContext =
+            serde_json::from_str(output.next().unwrap()).unwrap();
+        assert_eq!(context.focused_pane_cwd, expected_cwd);
+        assert_eq!(context.workspace_cwd, expected_cwd);
 
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn file_link_handler_uses_foreground_shell_cwd_when_parent_cwd_differs() {
+        let mut app = test_app();
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("nested-shell-link")];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let root = unique_temp_path("plugin-foreground-link");
+        write_manifest_content(
+            &root,
+            r#"
+id = "example.foreground-links"
+name = "Foreground links"
+version = "0.1.0"
+min_herdr_version = "0.6.10"
+platforms = ["linux", "macos"]
+[[actions]]
+id = "open"
+title = "Open link"
+command = ["sh", "-c", "printf '%s' \"$HERDR_PLUGIN_CONTEXT_JSON\" > \"$HERDR_PLUGIN_ROOT/context.json\""]
+[[link_handlers]]
+id = "file"
+title = "Open file"
+pattern = "^file:"
+action = "open"
+"#,
+        );
+        link_manifest(&mut app, &root);
+        let parent_cwd = root.join("parent");
+        let foreground_cwd = root.join("foreground");
+        std::fs::create_dir_all(&parent_cwd).unwrap();
+        std::fs::create_dir_all(&foreground_cwd).unwrap();
+        let parent_cwd = parent_cwd.canonicalize().unwrap();
+        let foreground_cwd = foreground_cwd.canonicalize().unwrap();
+        std::fs::write(foreground_cwd.join("plain.txt"), "first\nsecond\n").unwrap();
+        let (events, _rx) = tokio::sync::mpsc::channel(32);
+        let runtime = crate::terminal::TerminalRuntime::spawn(
+            pane_id,
+            8,
+            100,
+            parent_cwd.clone(),
+            0,
+            crate::terminal_theme::TerminalTheme::default(),
+            None,
+            crate::pane::PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin),
+            &crate::pane::PaneLaunchEnv::from_extra(vec![(
+                "HERDR_TEST_FOREGROUND_DIR".into(),
+                foreground_cwd.display().to_string(),
+            )]),
+            events,
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+            std::sync::Arc::new(crate::render_signal::RenderSignal::new()),
+        )
+        .unwrap();
+        // The parent shell remains in its launch directory while a foreground
+        // child shell changes directory and waits for input, as on the EL8 host.
+        runtime.try_send_bytes(bytes::Bytes::from_static(
+            b"/bin/sh -c 'cd \"$HERDR_TEST_FOREGROUND_DIR\"; printf \"link-cwd-ready\\n\"; read reply'\n",
+        )).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while runtime.foreground_cwd().as_ref() != Some(&foreground_cwd)
+                || !runtime.visible_text().contains("link-cwd-ready")
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("nested foreground shell should enter the fixture directory");
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        let pane = app.pane_info(0, pane_id).unwrap();
+        assert_eq!(pane.cwd.as_deref(), parent_cwd.to_str());
+        assert_eq!(pane.foreground_cwd.as_deref(), foreground_cwd.to_str());
+
+        assert!(app
+            .invoke_plugin_link_handler_for_url("file:plain.txt:2", pane_id)
+            .unwrap());
+        let context: PluginInvocationContext =
+            serde_json::from_str(&read_capture_when_ready(&root.join("context.json"), || {
+                app.drain_all_internal_events();
+            }))
+            .unwrap();
+        assert_eq!(context.focused_pane_cwd.as_deref(), foreground_cwd.to_str());
+        assert_eq!(context.workspace_cwd.as_deref(), foreground_cwd.to_str());
+        assert_eq!(context.clicked_url.as_deref(), Some("file:plain.txt:2"));
+        assert_eq!(context.focused_pane_id, Some(pane.pane_id));
+        assert_eq!(
+            std::fs::read_to_string(
+                std::path::Path::new(context.focused_pane_cwd.as_deref().unwrap())
+                    .join("plain.txt")
+            )
+            .unwrap(),
+            "first\nsecond\n",
+        );
+        app.terminal_runtimes
+            .remove(&terminal_id)
+            .unwrap()
+            .shutdown();
         let _ = std::fs::remove_dir_all(root);
     }
 

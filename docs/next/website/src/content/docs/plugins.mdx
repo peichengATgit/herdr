@@ -385,7 +385,10 @@ paths, quoted paths containing spaces, and source locations such as
 `src/main.rs:42:7`. Text paths are passed to matching plugin handlers with a `file:`
 prefix, for example `file:src/main.rs:42:7`. Explicit OSC 8 links retain their URI.
 Handlers must resolve relative paths against `focused_pane_cwd` from the invocation
-context, rather than their own process directory. File URI handlers must decode
+context, rather than their own process directory. For link clicks, this directory
+follows the source pane's foreground process when available, including a nested
+shell that has changed directories, and falls back to the pane's shell directory.
+File URI handlers must decode
 URI escapes and validate the authority before accessing local files. Unclaimed
 file links do not open externally.
 
