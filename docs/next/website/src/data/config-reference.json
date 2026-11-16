@@ -1165,6 +1165,16 @@
           "description": "Play sounds when agents change state in background workspaces."
         },
         {
+          "key": "ui.sound.backend",
+          "type": "enum",
+          "default": "\"audio\"",
+          "description": "Notification sound delivery. Audio plays MP3 files on the client host; bell emits one terminal bell for Done and two 300 milliseconds apart for Request, including over SSH.",
+          "values": [
+            "audio",
+            "bell"
+          ]
+        },
+        {
           "key": "ui.sound.path",
           "type": "path",
           "default": "unset",

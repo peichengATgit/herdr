@@ -500,7 +500,33 @@ On Windows, `system` notifications remain in Notification Center. Clicking one s
 
 ## Sound
 
-Sound notifications play through the local Herdr client. Custom sounds must be mp3 files; Herdr resolves relative paths from the config file's directory.
+Sound notifications play through the Herdr client. The default `backend = "audio"` plays MP3
+files on the machine running that client. If you SSH to another machine and start Herdr there,
+audio playback happens on that remote machine.
+
+Use terminal bells to hear notifications through your local terminal over SSH:
+
+```toml
+[ui.sound]
+enabled = true
+backend = "bell"
+```
+
+Done emits one bell; Request (input or approval needed) emits two bells 300 milliseconds apart.
+The terminal controls the sound, and may rate-limit repeated bells. Enable audible bells in the
+terminal on your own computer: for Ghostty on macOS, set `bell-features = system` and reload its
+configuration. Run `printf '\007'` in a plain SSH shell to check that a bell is audible.
+
+Bell notifications keep the existing mute settings, per-agent overrides, and active-tab
+completion suppression. `HERDR_DISABLE_SOUND` disables both backends. MP3 path settings are
+ignored by the bell backend.
+
+When you run Herdr after SSH, set this on that remote host. It requires a Herdr client build
+that supports the bell backend. After installing it, detach and reattach to the same session to
+use the updated client; a compatible running server and its pane processes can keep running.
+
+For the audio backend, custom sounds must be mp3 files; Herdr resolves relative paths from the
+config file's directory.
 
 ```toml
 [ui.sound]

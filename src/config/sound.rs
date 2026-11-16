@@ -10,6 +10,8 @@ use super::io::resolve_config_relative_path;
 #[serde(default)]
 pub struct SoundConfig {
     pub enabled: bool,
+    /// Audio plays mp3 files on the client host; bell emits terminal bells, including over SSH.
+    pub backend: SoundBackend,
     /// Optional mp3 file path used for all notification sounds.
     /// Relative paths are resolved from the config file's directory.
     pub path: Option<PathBuf>,
@@ -20,6 +22,14 @@ pub struct SoundConfig {
     /// Relative paths are resolved from the config file's directory.
     pub request_path: Option<PathBuf>,
     pub agents: AgentSoundOverrides,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SoundBackend {
+    #[default]
+    Audio,
+    Bell,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -77,6 +87,9 @@ impl SoundConfig {
     }
 
     pub fn diagnostics(&self) -> Vec<String> {
+        if self.backend == SoundBackend::Bell {
+            return Vec::new();
+        }
         let mut diagnostics = Vec::new();
         for (field, path) in [
             ("ui.sound.path", self.path.as_ref()),
@@ -155,6 +168,7 @@ impl Default for SoundConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            backend: SoundBackend::default(),
             path: None,
             done_path: None,
             request_path: None,
@@ -198,6 +212,22 @@ mod tests {
 
     use super::*;
     use crate::config::{config_path, Config};
+
+    #[test]
+    fn sound_backend_defaults_to_audio_and_parses_bell() {
+        let existing: Config = toml::from_str("[ui.sound]\nenabled = true").unwrap();
+        assert_eq!(existing.ui.sound.backend, SoundBackend::Audio);
+        let bell: Config =
+            toml::from_str("[ui.sound]\nbackend = 'bell'\ndone_path = 'unused.wav'").unwrap();
+        assert_eq!(bell.ui.sound.backend, SoundBackend::Bell);
+        assert!(bell.ui.sound.diagnostics().is_empty());
+        assert!(bell.ui.sound.allows(Some(Agent::Codex)));
+        assert!(!bell.ui.sound.allows(Some(Agent::Droid)));
+        assert!(toml::from_str::<Config>("[ui.sound]\nbackend = 'invalid'").is_err());
+        let muted: Config =
+            toml::from_str("[ui.sound]\nbackend = 'bell'\nenabled = false").unwrap();
+        assert!(!muted.ui.sound.allows(Some(Agent::Codex)));
+    }
 
     #[test]
     fn sound_table_config_parses() {

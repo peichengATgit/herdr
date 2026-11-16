@@ -1,6 +1,6 @@
 //! Sound notifications for agent state changes.
 //!
-//! Embeds mp3 files in the binary and plays them via system audio tools.
+//! Plays mp3 files via system audio tools, or emits terminal bell patterns for SSH clients.
 //! Uses afplay (macOS), Windows MediaPlayer, or decoder-capable Linux audio
 //! players — no Rust audio dependencies.
 
@@ -26,6 +26,9 @@ const AUDIO_PLAYER_POLL_INTERVAL: Duration = Duration::from_millis(25);
 static SOUND_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static SOUND_DONE: &[u8] = include_bytes!("../assets/sounds/done.mp3");
 static SOUND_REQUEST: &[u8] = include_bytes!("../assets/sounds/request.mp3");
+const REQUEST_BELL_GAP: std::time::Duration = std::time::Duration::from_millis(300);
+// Serialize notification patterns without holding stdout or blocking the client event loop.
+static BELL_PATTERN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Which notification sound to play.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +42,23 @@ pub enum Sound {
 /// Play a notification sound in a background thread.
 /// Silently does nothing if no audio player is available.
 pub fn play(sound: Sound, config: &crate::config::SoundConfig) {
-    if sound_playback_disabled_by_env() {
+    if !config.enabled || sound_playback_disabled_by_env() {
+        return;
+    }
+
+    if config.backend == crate::config::SoundBackend::Bell {
+        std::thread::spawn(move || {
+            let _pattern = BELL_PATTERN_LOCK
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            if let Err(err) = play_bell_pattern(
+                sound,
+                || crate::terminal_effects::write_terminal_bells(&mut std::io::stdout().lock(), 1),
+                std::thread::sleep,
+            ) {
+                warn!(sound = ?sound, err = %err, "terminal bell notification failed");
+            }
+        });
         return;
     }
 
@@ -63,6 +82,20 @@ pub fn play(sound: Sound, config: &crate::config::SoundConfig) {
             warn!(sound = ?sound, err = %err, "sound playback failed");
         }
     });
+}
+
+/// Emit and flush each bell separately. Only the worker waits; stdout is unlocked during the gap.
+fn play_bell_pattern(
+    sound: Sound,
+    mut emit: impl FnMut() -> std::io::Result<()>,
+    mut wait: impl FnMut(std::time::Duration),
+) -> std::io::Result<()> {
+    emit()?;
+    if sound == Sound::Request {
+        wait(REQUEST_BELL_GAP);
+        emit()?;
+    }
+    Ok(())
 }
 
 fn sound_playback_disabled_by_env() -> bool {
@@ -365,6 +398,48 @@ fn player_error(player: AudioPlayer, output: &Output) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn done_bell_has_one_pulse_and_no_delay() {
+        let mut bytes = Vec::new();
+        play_bell_pattern(
+            Sound::Done,
+            || crate::terminal_effects::write_terminal_bells(&mut bytes, 1),
+            |_| panic!("Done must not wait"),
+        )
+        .unwrap();
+        assert_eq!(bytes, b"\x07");
+    }
+
+    #[test]
+    fn request_bells_are_flushed_with_a_gap_between_pulses() {
+        use std::cell::RefCell;
+        use std::time::Duration;
+        let events = RefCell::new(Vec::new());
+        play_bell_pattern(
+            Sound::Request,
+            || {
+                events.borrow_mut().push(Duration::ZERO);
+                Ok(())
+            },
+            |gap| events.borrow_mut().push(gap),
+        )
+        .unwrap();
+        assert_eq!(
+            events.into_inner(),
+            [Duration::ZERO, Duration::from_millis(300), Duration::ZERO]
+        );
+    }
+
+    #[test]
+    fn failed_bell_stops_the_pattern_without_waiting() {
+        let result = play_bell_pattern(
+            Sound::Request,
+            || Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe)),
+            |_| panic!("Failed delivery must not wait"),
+        );
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::BrokenPipe);
+    }
 
     #[test]
     fn temp_sound_paths_are_unique() {

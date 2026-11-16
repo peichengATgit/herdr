@@ -32,7 +32,7 @@ pub use self::{
         AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SidebarTokenStyle,
         SpaceSidebarToken, SpacesSidebarConfig,
     },
-    sound::SoundConfig,
+    sound::{SoundBackend, SoundConfig},
     tab_bar::TabBarRightEntryConfig,
     theme::{parse_color, CustomThemeColors, ModeThemeColors, ThemeConfig, THEME_NAMES},
     window_title::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken},
