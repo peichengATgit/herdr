@@ -384,7 +384,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Play sounds when agents change state in background workspaces
 [ui.sound]
 # enabled = true
-# backend = "audio" # audio | bell; bell works over SSH (Done: one, Request: two 300 ms apart)
+# backend = "audio" # audio | bell; bell works over SSH (Done: one, Request: two 150 ms apart)
 # Optional custom mp3 sound files. Relative paths are resolved from this config file's directory.
 # path = "sounds/notification.mp3"   # one mp3 file for all sound notifications
 # done_path = "sounds/done.mp3"      # overrides only finished notifications
@@ -393,11 +393,11 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Optional shared signature and event suffixes (only for backend = "bell").
 # [ui.sound.bell]
 # prefix_count = 2     # default: 0 (no prefix); range: 0–8
-# prefix_gap_ms = 100  # default: 100; range: 50–1000
+# prefix_gap_ms = 150  # default: 150; range: 50–1000
 # separator_ms = 600   # default: 600; range: 0–2000
 # done_count = 1       # default: 1; range: 1–8
 # request_count = 3    # default: 2; range: 1–8
-# suffix_gap_ms = 100  # default: 300; range: 50–1000
+# suffix_gap_ms = 150  # default: 150; range: 50–1000
 
 # Per-agent overrides: default | on | off
 # By default, droid is muted.

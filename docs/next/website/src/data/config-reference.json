@@ -1168,7 +1168,7 @@
           "key": "ui.sound.backend",
           "type": "enum",
           "default": "\"audio\"",
-          "description": "Notification sound delivery. Audio plays MP3 files on the client host; bell emits one terminal bell for Done and two 300 milliseconds apart for Request, including over SSH.",
+          "description": "Notification sound delivery. Audio plays MP3 files on the client host; bell emits one terminal bell for Done and two 150 milliseconds apart for Request, including over SSH.",
           "values": [
             "audio",
             "bell"
@@ -1183,7 +1183,7 @@
         {
           "key": "ui.sound.bell.prefix_gap_ms",
           "type": "integer",
-          "default": "100",
+          "default": "150",
           "description": "Milliseconds between prefix bells. Range: 50–1000. Out-of-range values are clamped."
         },
         {
@@ -1207,7 +1207,7 @@
         {
           "key": "ui.sound.bell.suffix_gap_ms",
           "type": "integer",
-          "default": "300",
+          "default": "150",
           "description": "Milliseconds between suffix bells. Range: 50–1000. Out-of-range values are clamped."
         },
         {

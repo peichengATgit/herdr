@@ -54,11 +54,11 @@ impl Default for BellPatternConfig {
     fn default() -> Self {
         Self {
             prefix_count: 0,
-            prefix_gap_ms: 100,
+            prefix_gap_ms: 150,
             separator_ms: 600,
             done_count: 1,
             request_count: 2,
-            suffix_gap_ms: 300,
+            suffix_gap_ms: 150,
         }
     }
 }
@@ -288,6 +288,8 @@ mod tests {
     fn sound_backend_defaults_to_audio_and_parses_bell() {
         let existing: Config = toml::from_str("[ui.sound]\nenabled = true").unwrap();
         assert_eq!(existing.ui.sound.backend, SoundBackend::Audio);
+        assert_eq!(existing.ui.sound.bell.prefix_gap_ms, 150);
+        assert_eq!(existing.ui.sound.bell.suffix_gap_ms, 150);
         let bell: Config =
             toml::from_str("[ui.sound]\nbackend = 'bell'\ndone_path = 'unused.wav'").unwrap();
         assert_eq!(bell.ui.sound.backend, SoundBackend::Bell);

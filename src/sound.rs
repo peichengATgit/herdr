@@ -476,7 +476,7 @@ mod tests {
         );
         assert!(result.is_err());
         assert_eq!(pulses, 2);
-        assert_eq!(waits, [std::time::Duration::from_millis(100)]);
+        assert_eq!(waits, [std::time::Duration::from_millis(150)]);
     }
 
     #[test]
@@ -509,7 +509,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             events.into_inner(),
-            [Duration::ZERO, Duration::from_millis(300), Duration::ZERO]
+            [Duration::ZERO, Duration::from_millis(150), Duration::ZERO]
         );
     }
 
