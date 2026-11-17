@@ -512,7 +512,7 @@ enabled = true
 backend = "bell"
 ```
 
-Done emits one bell; Request (input or approval needed) emits two bells 300 milliseconds apart.
+By default, Done emits one bell; Request (input or approval needed) emits two bells 300 milliseconds apart.
 The terminal controls the sound, and may rate-limit repeated bells. Enable audible bells in the
 terminal on your own computer: for Ghostty on macOS, set `bell-features = system` and reload its
 configuration. Run `printf '\007'` in a plain SSH shell to check that a bell is audible.
@@ -520,6 +520,29 @@ configuration. Run `printf '\007'` in a plain SSH shell to check that a bell is 
 Bell notifications keep the existing mute settings, per-agent overrides, and active-tab
 completion suppression. `HERDR_DISABLE_SOUND` disables both backends. MP3 path settings are
 ignored by the bell backend.
+
+To distinguish Herdr notifications from ordinary terminal bells, configure a shared prefix and
+event suffixes. This example uses two prefix knocks 100 ms apart, a 600 ms pause, then one knock
+for Done or three knocks 100 ms apart for Request:
+
+```toml
+[ui.sound.bell]
+prefix_count = 2
+prefix_gap_ms = 100
+separator_ms = 600
+done_count = 1
+request_count = 3
+suffix_gap_ms = 100
+```
+
+These settings apply only to `backend = "bell"`. With no pattern settings, `prefix_count` defaults
+to `0` (no prefix), `done_count` to `1`, `request_count` to `2`, and `suffix_gap_ms` to `300`.
+The other defaults are `prefix_gap_ms = 100` and `separator_ms = 600`. With no prefix, the separator
+is skipped. There is no extra pause after the last suffix knock.
+
+Prefix counts are limited to 0–8 and suffix counts to 1–8. Gaps are limited to 50–1000 ms and the
+separator to 0–2000 ms. Values outside these ranges are clamped and produce a configuration
+diagnostic. Terminals can suppress closely spaced bells, so preview the rhythm in your own terminal.
 
 When you run Herdr after SSH, set this on that remote host. It requires a Herdr client build
 that supports the bell backend. After installing it, detach and reattach to the same session to

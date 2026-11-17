@@ -26,7 +26,6 @@ const AUDIO_PLAYER_POLL_INTERVAL: Duration = Duration::from_millis(25);
 static SOUND_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static SOUND_DONE: &[u8] = include_bytes!("../assets/sounds/done.mp3");
 static SOUND_REQUEST: &[u8] = include_bytes!("../assets/sounds/request.mp3");
-const REQUEST_BELL_GAP: std::time::Duration = std::time::Duration::from_millis(300);
 // Serialize notification patterns without holding stdout or blocking the client event loop.
 static BELL_PATTERN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -47,12 +46,14 @@ pub fn play(sound: Sound, config: &crate::config::SoundConfig) {
     }
 
     if config.backend == crate::config::SoundBackend::Bell {
+        let pattern = config.bell.bounded();
         std::thread::spawn(move || {
             let _pattern = BELL_PATTERN_LOCK
                 .lock()
                 .unwrap_or_else(|err| err.into_inner());
             if let Err(err) = play_bell_pattern(
                 sound,
+                pattern,
                 || crate::terminal_effects::write_terminal_bells(&mut std::io::stdout().lock(), 1),
                 std::thread::sleep,
             ) {
@@ -87,12 +88,28 @@ pub fn play(sound: Sound, config: &crate::config::SoundConfig) {
 /// Emit and flush each bell separately. Only the worker waits; stdout is unlocked during the gap.
 fn play_bell_pattern(
     sound: Sound,
+    pattern: crate::config::BellPatternConfig,
     mut emit: impl FnMut() -> std::io::Result<()>,
     mut wait: impl FnMut(std::time::Duration),
 ) -> std::io::Result<()> {
-    emit()?;
-    if sound == Sound::Request {
-        wait(REQUEST_BELL_GAP);
+    let pattern = pattern.bounded();
+    for pulse in 0..pattern.prefix_count {
+        if pulse > 0 {
+            wait(std::time::Duration::from_millis(pattern.prefix_gap_ms));
+        }
+        emit()?;
+    }
+    if pattern.prefix_count > 0 && pattern.separator_ms > 0 {
+        wait(std::time::Duration::from_millis(pattern.separator_ms));
+    }
+    let count = match sound {
+        Sound::Done => pattern.done_count,
+        Sound::Request => pattern.request_count,
+    };
+    for pulse in 0..count {
+        if pulse > 0 {
+            wait(std::time::Duration::from_millis(pattern.suffix_gap_ms));
+        }
         emit()?;
     }
     Ok(())
@@ -400,10 +417,74 @@ mod tests {
     use super::*;
 
     #[test]
+    fn configured_signature_precedes_each_event_suffix_without_trailing_wait() {
+        use std::cell::RefCell;
+        use std::time::Duration;
+        let pattern = crate::config::BellPatternConfig {
+            prefix_count: 2,
+            prefix_gap_ms: 100,
+            separator_ms: 600,
+            done_count: 1,
+            request_count: 3,
+            suffix_gap_ms: 100,
+        };
+        for (sound, expected_ms) in [
+            (Sound::Done, vec![0, 100, 0, 600, 0]),
+            (Sound::Request, vec![0, 100, 0, 600, 0, 100, 0, 100, 0]),
+        ] {
+            let events = RefCell::new(Vec::new());
+            play_bell_pattern(
+                sound,
+                pattern,
+                || {
+                    events.borrow_mut().push(Duration::ZERO);
+                    Ok(())
+                },
+                |gap| events.borrow_mut().push(gap),
+            )
+            .unwrap();
+            assert_eq!(
+                events.into_inner(),
+                expected_ms
+                    .into_iter()
+                    .map(Duration::from_millis)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn prefix_write_failure_does_not_continue_to_suffix() {
+        let pattern = crate::config::BellPatternConfig {
+            prefix_count: 2,
+            ..Default::default()
+        };
+        let mut pulses = 0;
+        let mut waits = Vec::new();
+        let result = play_bell_pattern(
+            Sound::Request,
+            pattern,
+            || {
+                pulses += 1;
+                if pulses == 2 {
+                    Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+                } else {
+                    Ok(())
+                }
+            },
+            |gap| waits.push(gap),
+        );
+        assert!(result.is_err());
+        assert_eq!(pulses, 2);
+        assert_eq!(waits, [std::time::Duration::from_millis(100)]);
+    }
+
+    #[test]
     fn done_bell_has_one_pulse_and_no_delay() {
         let mut bytes = Vec::new();
         play_bell_pattern(
             Sound::Done,
+            crate::config::BellPatternConfig::default(),
             || crate::terminal_effects::write_terminal_bells(&mut bytes, 1),
             |_| panic!("Done must not wait"),
         )
@@ -418,6 +499,7 @@ mod tests {
         let events = RefCell::new(Vec::new());
         play_bell_pattern(
             Sound::Request,
+            crate::config::BellPatternConfig::default(),
             || {
                 events.borrow_mut().push(Duration::ZERO);
                 Ok(())
@@ -435,6 +517,7 @@ mod tests {
     fn failed_bell_stops_the_pattern_without_waiting() {
         let result = play_bell_pattern(
             Sound::Request,
+            crate::config::BellPatternConfig::default(),
             || Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe)),
             |_| panic!("Failed delivery must not wait"),
         );

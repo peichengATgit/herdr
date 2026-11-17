@@ -1175,6 +1175,42 @@
           ]
         },
         {
+          "key": "ui.sound.bell.prefix_count",
+          "type": "integer",
+          "default": "0",
+          "description": "Number of bells in the shared prefix; 0 disables it. Range: 0–8. Out-of-range values are clamped."
+        },
+        {
+          "key": "ui.sound.bell.prefix_gap_ms",
+          "type": "integer",
+          "default": "100",
+          "description": "Milliseconds between prefix bells. Range: 50–1000. Out-of-range values are clamped."
+        },
+        {
+          "key": "ui.sound.bell.separator_ms",
+          "type": "integer",
+          "default": "600",
+          "description": "Milliseconds between prefix and suffix; ignored without a prefix. Range: 0–2000. Out-of-range values are clamped."
+        },
+        {
+          "key": "ui.sound.bell.done_count",
+          "type": "integer",
+          "default": "1",
+          "description": "Bells in the Done suffix. Range: 1–8. Out-of-range values are clamped."
+        },
+        {
+          "key": "ui.sound.bell.request_count",
+          "type": "integer",
+          "default": "2",
+          "description": "Bells in the Request suffix. Range: 1–8. Out-of-range values are clamped."
+        },
+        {
+          "key": "ui.sound.bell.suffix_gap_ms",
+          "type": "integer",
+          "default": "300",
+          "description": "Milliseconds between suffix bells. Range: 50–1000. Out-of-range values are clamped."
+        },
+        {
           "key": "ui.sound.path",
           "type": "path",
           "default": "unset",

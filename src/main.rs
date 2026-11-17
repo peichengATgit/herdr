@@ -390,6 +390,15 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # done_path = "sounds/done.mp3"      # overrides only finished notifications
 # request_path = "sounds/request.mp3" # overrides only needs-attention notifications
 
+# Optional shared signature and event suffixes (only for backend = "bell").
+# [ui.sound.bell]
+# prefix_count = 2     # default: 0 (no prefix); range: 0–8
+# prefix_gap_ms = 100  # default: 100; range: 50–1000
+# separator_ms = 600   # default: 600; range: 0–2000
+# done_count = 1       # default: 1; range: 1–8
+# request_count = 3    # default: 2; range: 1–8
+# suffix_gap_ms = 100  # default: 300; range: 50–1000
+
 # Per-agent overrides: default | on | off
 # By default, droid is muted.
 # [ui.sound.agents]
